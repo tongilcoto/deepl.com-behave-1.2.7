@@ -1,0 +1,11 @@
+{
+  "array_translation_alternatives": "p[class='lmt__translations_as_text__item'] button.lmt__translations_as_text__text_btn",
+  "array_translation_lemma_element": "div.lemma",
+  "array_translation_lemma_label": "h2 a",
+  "array_translation_lemma_wordtype": "h2 .tag_wordtype",
+  "array_translation_lemma_usage": "h2 .tag_usage",
+  "array_translation_meaning_label": "h3 a[id]",
+  "original_language_label": ".lmt__language_select__active__title strong",
+  "source_text": "[dl-test='translator-source-input']",
+  "translated_text": "[dl-test='translator-target-input']"
+}

@@ -1,0 +1,28 @@
+{
+  "short": [
+    {
+      "input": "challenge accepted",
+      "output": {
+        "spanish": {
+          "result": "reto aceptado",
+          "alternatives": [
+            "desafío aceptado"
+          ]
+        }
+      }
+    }
+  ],
+  "complex": [
+    {
+      "input": "may the force be with you",
+      "output": {
+        "spanish": {
+          "result": "que la fuerza te acompañe",
+          "alternatives": [
+            "que la fuerza esté contigo"
+          ]
+        }
+      }
+    }
+  ]
+}

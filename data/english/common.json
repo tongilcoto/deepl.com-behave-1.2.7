@@ -1,0 +1,67 @@
+{
+  "ordinary": [
+    {
+      "input": "beautiful",
+      "output": {
+        "spanish": {
+          "result": "hermoso",
+          "meanings": [
+            {
+              "type": "adjetivo",
+              "meanings": [
+                "hermoso",
+                "bello",
+                "bonito",
+                "precioso",
+                "guapo",
+                "espléndido"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "multiple-options": [
+    {
+      "input": "girl",
+      "output": {
+        "spanish": {
+          "result": "chica",
+          "alternatives": [
+            "niña"
+          ],
+          "meanings": [
+            {
+              "type": "sustantivo",
+              "meanings": [
+                "chica",
+                "niña"
+              ]
+            },
+            {
+              "type": "sustantivo",
+              "subtypes": [
+                "[coloq.]"
+              ],
+              "meanings": [
+                "tía"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "unknown": [
+    {
+      "input": "helllo",
+      "output": {
+        "spanish": {
+          "result": "helllo",
+          "alternatives": ["hola"]
+        }
+      }
+    }
+  ]
+}
