@@ -7,13 +7,13 @@ Feature: Deepl.com Different input text wording
     - Ideally translation algorithm tests could be performed using APIs tests, this approach will avoid wasting time in front end framework
   - Parameter values such as "common", "ordinary", "multiple-options", etc should be changed to more appropriated ones following business ordinary terminology
 
-  @wip
   Scenario: Test simple english common word with default web desired language translation
     Given I open Deepl.com page with "default" language
     When I inform a "common" "ordinary" "english" word
     Then the input is properly translated
     And the original language is set to "english"
     And all word meanings are shown in the multiple meaning box
+
 
   Scenario: Test simple english common word with default web desired language translation
     Given I open Deepl.com page with "default" language
@@ -38,6 +38,7 @@ Feature: Deepl.com Different input text wording
     Then the input is properly translated
     And the original language is set to "english"
     And all alternatives are shown in the result box
+
 
   Scenario: Test english unknown word with default web desired language best-effort-translation
     Given I open Deepl.com page with "default" language

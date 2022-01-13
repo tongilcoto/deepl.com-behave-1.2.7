@@ -13,10 +13,12 @@
 ## Execution
 
 Desktop
-behave --no-capture -f json -o reports/report.json
+
+behave -i features/testWording.feature --no-capture -f json -o reports/report.json
 
 Mobile
-behace -D mobile --no-capture -f json -o reports/report.json
+
+behave -D mobile -i features/testWording.feature --no-capture -f json -o reports/report.json
 
 ## Project lay out
 

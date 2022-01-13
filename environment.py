@@ -2,14 +2,13 @@ from screenshotFileName import get_screenshot_new_file_name
 from behave.model_core import Status
 
 
-def before_all(context):
+def before_scenario(context, scenario):
     if context.config.userdata.get("mobile"):
         print("mobile")
         from sut.model.mobileMainPage import MainPage
     else:
         print("desktop")
         from sut.model.mainPage import MainPage
-
     context.main_page = MainPage("default")
 
 
