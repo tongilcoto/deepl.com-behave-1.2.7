@@ -5,9 +5,9 @@ from os import listdir
 def get_screenshot_new_file_name(scenario_name, step_name, directory='reports'):
     step_file_name = '-'.join(step_name.split(' '))
     if re.search(r'@([\d]+).([\d]+)', scenario_name):
-        # scenario name = 'scenario name --@1.1' ==> file_name = scenario name_0_step name_[1,2,3,...].png
-        # scenario name = 'scenario name --@1.2' ==> file_name = scenario name_1_step name_[1,2,3,...].png
-        scenario_simple_name, scenario_outline_index_str = re.search(r'(.+) --@([\d]+).([\d]+)', scenario_name)\
+        # scenario name = 'scenario name -- @1.1' ==> file_name = scenario name_0_step name_[1,2,3,...].png
+        # scenario name = 'scenario name -- @1.2' ==> file_name = scenario name_1_step name_[1,2,3,...].png
+        scenario_simple_name, scenario_outline_index_str = re.search(r'(.+) -- @([\d]+).([\d]+)', scenario_name)\
             .group(1, 2)
         scenario_outline_index = int(scenario_outline_index_str) - 1
         scenario_file_name = '-'.join(scenario_simple_name.split(' '))
