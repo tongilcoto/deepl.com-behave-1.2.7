@@ -8,7 +8,7 @@ def get_screenshot_new_file_name(scenario_name, step_name, directory='reports'):
         # scenario name = 'scenario name -- @1.1' ==> file_name = scenario name_0_step name_[1,2,3,...].png
         # scenario name = 'scenario name -- @1.2' ==> file_name = scenario name_1_step name_[1,2,3,...].png
         scenario_simple_name, scenario_outline_index_str = re.search(r'(.+) -- @([\d]+).([\d]+)', scenario_name)\
-            .group(1, 2)
+            .group(1, 3)
         scenario_outline_index = int(scenario_outline_index_str) - 1
         scenario_file_name = '-'.join(scenario_simple_name.split(' '))
         file_name_no_intra_step_counter = scenario_file_name + '_' + str(scenario_outline_index) + '_' + step_file_name
