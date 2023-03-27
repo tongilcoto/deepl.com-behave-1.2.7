@@ -4,9 +4,9 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-behave = "*"
 selenium = "*"
 pyhamcrest = "*"
+behave = {ref = "v1.2.7.dev2", git = "https://github.com/behave/behave"}
 
 [dev-packages]
 
