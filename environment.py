@@ -22,5 +22,11 @@ def after_scenario(context, scenario):
     if context.failed:
         screenshot_name = get_screenshot_new_file_name(scenario.name, context.failed_step_name)
         screenshot = context.current_page.get_screenshot(screenshot_name)
-        #context.attach("image/png", screenshot)
+        #
+        # Workaround for https://github.com/behave/behave/issues/906
+        # --> context.attach issue "list index out of range".
+        #
+        context._runner.formatters[0]._step_index -= 1
+        ## Workaround END
+        context.attach("image/png", screenshot)
     context.current_page.close()
