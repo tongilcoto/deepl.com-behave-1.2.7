@@ -1,0 +1,773 @@
+# Server
+
+```
+import json
+import os
+import sys
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
+from playwright.async_api import async_playwright, Browser, APIRequestContext
+
+# How to create log traces that can be read by Visual Studio Code Output console
+#sys.stderr.write('LOG TRACE\n')
+
+PATH = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(f"{PATH}/.env")
+
+browser_proxy_options = {
+    "server": os.getenv("PROXY_SERVER"),
+    "bypass": os.getenv("PROXY_BYPASSED_HOSTS"),
+    "username": os.getenv('PROXY_USERNAME'),
+    "password": os.getenv('PROXY_PASSWORD')
+}
+
+try:
+    with open(f"{PATH}/config.json") as f:
+        config = json.load(f)
+except Exception as e:
+    print(f"Error loading config: {e}")
+
+class PlaywrightContext:
+    def __init__(self):
+        self.engine = None  # Playwright
+        self.browser: Browser | None = None
+        self.api_context: APIRequestContext | None = None
+
+    async def start(self):
+        self.engine = await async_playwright().start()
+
+    async def login_into_jira_server(self):
+        if os.getenv(os.getenv('CI_CD_ENV_VARIABLE')):
+            proxy_options =  browser_proxy_options if os.getenv('CI_CD_NEEDS_PROXY') else None
+            browser = await self.engine.chromium.launch(headless=False, slow_mo=100, proxy=proxy_options)
+            username = os.getenv('CI_CD_JIRA_USERNAME')
+            password = os.getenv('CI_CD_JIRA_PASSWORD')
+            config['JIRA_USER_KEY'] = os.getenv('CI_CD_JIRA_USER_KEY')
+            os.environ['JIRA_USER_KEY'] = os.getenv('CI_CD_JIRA_USER_KEY')
+            config['JIRA_USER_NAME'] = os.getenv('CI_CD_JIRA_USER_NAME')
+            os.environ['JIRA_USER_NAME'] = os.getenv('CI_CD_JIRA_USER_NAME')
+        else:
+            proxy_options =  browser_proxy_options if os.getenv('LOCAL_NEEDS_PROXY') else None
+            browser = await self.engine.chromium.launch(headless=False, slow_mo=100, proxy=proxy_options)
+            username = os.getenv('LOCAL_JIRA_USERNAME')
+            password = os.getenv('LOCAL_JIRA_PASSWORD')
+            config['JIRA_USER_KEY'] = os.getenv('LOCAL_JIRA_USER_KEY')
+            os.environ['JIRA_USER_KEY'] = os.getenv('LOCAL_JIRA_USER_KEY')
+            config['JIRA_USER_NAME'] = os.getenv('LOCAL_JIRA_USER_NAME')
+            os.environ['JIRA_USER_NAME'] = os.getenv('LOCAL_JIRA_USER_NAME')
+
+        context = await browser.new_context()
+        page = await context.new_page()
+        await page.goto('https://jira.axa.com/')
+        await page.fill('#identifierInput', username)
+        await page.click('#postButton button')
+        await page.wait_for_selector('#password')
+        await page.fill('#password', password)
+        await page.click('#signOnButton')
+        await page.wait_for_selector('#logo')
+
+        cookies = await context.cookies()
+
+        login_cookie = next((c['value'] for c in cookies if c['name'] == os.getenv("LOGIN_COOKIE")), None)
+        if not login_cookie:
+            await browser.close()
+            return f"Login has failed. Login cookie not found!"
+
+        self.browser = browser
+
+        self.api_context = await self.engine.request.new_context(
+            base_url="https://jira.axa.com",
+            ignore_https_errors=True,
+            storage_state={"cookies": cookies, "origins": []},
+        )
+        return "Logged"
+
+    async def logout(self):
+        if self.api_context is not None:
+            await self.api_context.dispose()
+            self.api_context = None
+        if self.browser is not None:
+            await self.browser.close()
+            self.browser = None
+        if self.engine is not None:
+            await self.engine.stop()
+            self.engine = None
+        return "Logged out"
+
+pw_context = PlaywrightContext()
+mcp = FastMCP("Jira Server version with Xray for Test Management")
+
+
+@mcp.tool()
+async def login_into_jira_server():
+    """Logs into the Jira Server instance using the credentials provided in the environment variables."""
+    if pw_context.engine is None:
+        await pw_context.start()
+    return await pw_context.login_into_jira_server()
+
+
+@mcp.tool()
+async def logout_from_jira_server():
+    """Logs out from the Jira Server instance and closes the browser."""
+    return await pw_context.logout()
+
+
+@mcp.tool()
+async def update_jira_test_scenario(jira_id: str, new_scenario: str) -> str:
+    """Updates the Scenario of the Test in Jira. The Test is an issue type provided by Xray
+    Args:
+        - jira_id: jira id of the test issue type. Both options, with or without the initial '@' symbol, are supported
+        - new_scenario: the new scenario text writen in Gherkin to be set in the Test issue type.
+    """
+    if pw_context.api_context is None:
+        return "Error: Not logged in. Please login first."
+    if jira_id.startswith('@'):
+        jira_id = jira_id.split('@')[1]
+    url = f"/jira/rest/api/2/issue/{jira_id}"
+    data = {
+        "fields": {
+            config["JIRA_GHERKIN_FIELD"]: new_scenario,
+        }
+    }
+    response = await pw_context.api_context.put(url,
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 204:
+        text = await response.text()
+        return f"Error updating {jira_id} test scenario: {response.status} {text}"
+    data = {"body": "Test Scenario updated (comment added by the Jira-Xray MCP Server.)"}
+    response = await pw_context.api_context.post(f"{url}/comment",
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 201:
+        text = await response.text()
+        return f"Error adding comment to {jira_id} test: {response.status} {text}"
+    return f"{jira_id} updated with new scenario"
+
+
+@mcp.tool()
+async def get_jira_ticket_info(jira_id: str) -> str:
+    """Returns the information of the Jira ticket for the given jira_id.
+    Args:
+        - jira_id: jira id of the jira ticket, not matter its issue type. Both options, with or without the initial '@' symbol, are supported
+    """
+    if pw_context.api_context is None:
+        return "Error: Not logged in. Please login first."
+    if jira_id.startswith('@'):
+        jira_id = jira_id.split('@')[1]
+    url = f"/jira/rest/api/2/issue/{jira_id}"
+    response = await pw_context.api_context.get(url)
+    text = await response.text()
+    if response.status != 200:
+        return f"Error getting {jira_id} information: {response.status} {text}"
+    return text
+
+
+@mcp.tool()
+async def get_jira_ticket_available_transitions(jira_id: str) -> str:
+    """Returns the available status transitions for the given jira_id.
+    Args:
+        - jira_id: jira id of the jira ticket, not matter its issue type. Both options, with or without the initial '@' symbol, are supported
+    """
+    if pw_context.api_context is None:
+        return "Error: Not logged in. Please login first."
+    if jira_id.startswith('@'):
+        jira_id = jira_id.split('@')[1]
+    url = f"/jira/rest/api/2/issue/{jira_id}/transitions"
+    response = await pw_context.api_context.get(url)
+    text = await response.text()
+    if response.status != 200:
+        return f"Error getting {jira_id} available transitions: {response.status} {text}"
+    return text
+
+
+@mcp.tool()
+async def create_jira_test(name: str, scenario: str, labels: str) -> str:
+    """Creates a brand new Test in Jira. The Test is an issue type provided by Xray
+    Args:
+        - name: the name of the Test to be created, the scenario name in a BDD framework.
+        - scenario: the new scenario text writen in Gherkin to be set in the Test issue type.
+        - labels: the labels to be set in the Test issue type, separated by commas: "tag1,tag2,tag3" (no spaces)
+    """
+    from jira_test import JiraTest
+
+    if pw_context.api_context is None:
+        return "Error: Not logged in. Please login first."
+    url = f"/jira/rest/api/2/issue/"
+    # Removing initial '@' symbol if present in tags
+    labels = [tag.split('@')[1] if tag.startswith('@') else tag for tag in labels.split(',')]
+    jira_test = JiraTest(name, scenario, labels)
+    data = jira_test.PAYLOAD
+    response = await pw_context.api_context.post(url,
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 201:
+        text = await response.text()
+        return f"Error creating new test: {response.status} {text}"
+    new_test = await response.json()
+    data = {"body": "This test has been created by the Jira-Xray MCP Server."}
+    response = await pw_context.api_context.post(f"{url}/{new_test['key']}/comment",
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 201:
+        text = await response.text()
+        return f"Error adding comment to {new_test['key']} test: {response.status} {text}"
+    return f"{new_test['key']} CREATED with new scenario"
+
+
+@mcp.tool()
+async def create_jira_task(summary: str, description: str) -> str:
+    """Create a brand new Task in Jira. A "Task" is a standard issue type in Jira for tracking work.
+    Args:
+        - summary: the tag line of the work to be done.
+        - description: the description of the work to be done.
+    """
+    from jira_task import JiraTask
+
+    if pw_context.api_context is None:
+        return "Error: Not logged in. Please login first."
+    url = f"/jira/rest/api/2/issue/"
+    jira_task = JiraTask(summary, description)
+    data = jira_task.PAYLOAD
+    response = await pw_context.api_context.post(url,
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 201:
+        text = await response.text()
+        return f"Error creating new task: {response.status} {text}"
+    new_test = await response.json()
+    data = {"body": "This task has been created by the Jira-Xray MCP Server."}
+    response = await pw_context.api_context.post(f"{url}/{new_test['key']}/comment",
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 201:
+        text = await response.text()
+        return f"Error adding comment to {new_test['key']} task: {response.status} {text}"
+    return f"{new_test['key']} CREATED with your summary and description"
+
+
+@mcp.tool()
+async def update_jira_ticket_status(jira_id: str, new_status: str) -> str:
+    """Updates the Jira Ticket, both Test or Task, to the given new status.
+    Args:
+        - jira_id: jira id of the ticket.
+        - new_status: the new status to be set in the ticket. Supported values are: "In Progress", "Code Review", "Resolved", "In Design"
+    """
+    if pw_context.api_context is None:
+        return "Error: Not logged in. Please login first."
+    if jira_id.startswith('@'):
+        jira_id = jira_id.split('@')[1]
+    text_string = await get_jira_ticket_available_transitions(jira_id)
+    if text_string.startswith("Error"):
+        return text_string
+    transitions = json.loads(text_string)['transitions']
+    transition = next((transition for transition in transitions if transition['name'] == new_status), None)
+    data = {"transition": transition}
+    base_url = f"/jira/rest/api/2/issue/{jira_id}"
+    response = await pw_context.api_context.post(f"{base_url}/transitions",
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 204:
+        text = await response.text()
+        return f"Error transitioning {jira_id}: {response.status} {text}"
+    data = {"body": f"This issue has been updated to *{new_status}* status by the Jira-Xray MCP Server."}
+    response = await pw_context.api_context.post(f"{base_url}/comment",
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 201:
+        text = await response.text()
+        return f"Error adding comment to {jira_id}: {response.status} {text}"
+    return f"{jira_id} updated with new status"
+
+
+@mcp.tool()
+async def download_feature_file(jira_id: str, project_root_folder: str) -> str:
+    """Downloads the feature file for the given jira_id and places it in the 'features' folder of the project root folder.
+    Args:
+        - jira_id: the Jira issue id for the Test Set. Both options, with or without the initial '@' symbol, are supported.
+        - project_root_folder: the project root folder where the "features" folder is. The file will be saved in "features" folder.
+    """
+    if pw_context.api_context is None:
+        return "Error: Not logged in. Please login first."
+    if jira_id.startswith('@'):
+        jira_id = jira_id.split('@')[1]
+    url = f"/jira/rest/raven/1.0/export/test?keys={jira_id}"
+    response = await pw_context.api_context.get(url)
+    if response.status != 200:
+        return f"Error downloading {jira_id} feature file: {response.status}"
+    sys.stderr.write(f'Headers: {response.headers}\n')
+    content = await response.body()
+    file_path = os.path.join(project_root_folder, "features", jira_id)
+    text = content.decode('utf-8')
+    text = '\n'.join(line.rstrip() for line in text.splitlines())
+    with open(file_path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    return f"{jira_id} feature file in 'features' folder"
+
+
+def filter_behave_skipped_tests(report: list) -> list:
+    for feature in report:
+        feature['elements'] = [
+            scenario for scenario in feature.get('elements', [])
+            if any('result' in step for step in scenario.get('steps', []))
+        ]
+    return report
+
+
+async def link_execution_to_test_set(test_execution: str, test_set: str) -> str | None:
+    from jira_issue_link import JiraIssueLink
+
+    jira_issue_link = JiraIssueLink(test_execution, test_set)
+    data = jira_issue_link.PAYLOAD
+    response = await pw_context.api_context.post('/jira/rest/api/2/issueLink',
+        headers={ 'Content-Type': 'application/json' },
+        data=json.dumps(data)
+    )
+    if response.status != 201:
+        return f"Error linking {test_execution} to {test_set}: {response.status} {await response.text()}"
+    return "OK"
+
+@mcp.tool()
+async def upload_bdd_report_file_to_jira(absolut_path_report_file_name: str, bdd_library: str, summary: str, test_set: str) -> str:
+    """Downloads the feature file for the given jira_id and places it in the 'features' folder of the project root folder.
+    Args:
+        - absolut_path_report_file_name: the absolute path, included the file name, of the report file to be uploaded.
+        - bbd_library: the BDD library used to generate the report file. Supported values are: "behave" and "cucumber"
+        - summary: the summary of the test execution to be created in Jira Xray. (It is the jira ticket title)
+        - test_set: the Jira issue id for the Test Set to link the created test execution. Both options, with or without the initial '@' symbol, are supported.
+    """
+    from jira_test_execution import JiraTestExecution
+    sys.stderr.write('LOG TRACE upload_bdd_report_file_to_jira\n')
+
+    if pw_context.api_context is None:
+        return "Error: Not logged in. Please login first."
+    if not os.path.exists(absolut_path_report_file_name):
+        return f"Report file {absolut_path_report_file_name} does not exist."
+    with open(absolut_path_report_file_name, 'rb') as f:
+        result_buffer = f.read()
+    if bdd_library.lower() == 'behave':
+        result_buffer = json.dumps(filter_behave_skipped_tests(json.loads(result_buffer))).encode('utf-8')
+    jira_test_execution = JiraTestExecution(summary)
+    info_buffer = json.dumps(jira_test_execution.PAYLOAD).encode('utf-8')
+    sys.stderr.write(f'LOG TRACE {info_buffer}')
+    multipart = {
+        "info": {
+            "name": "info.json",
+            "mimeType": "application/json",
+            "buffer": info_buffer
+        },
+        "result": {
+            "name": "result.json",
+            "mimeType": "application/json",
+            "buffer": result_buffer
+        }
+    }
+    sys.stderr.write('LOG TRACE before post\n')
+    response = await pw_context.api_context.post(f'/jira/rest/raven/1.0/import/execution/{bdd_library}/multipart',
+        multipart=multipart,  # type: ignore
+        timeout=120_000 )
+    if response.status != 200:
+        return f"Error uploading {absolut_path_report_file_name} report: {response.status} {await response.text()}"
+    test_execution_id = (await response.json())['testExecIssue']['key']
+    # Link the created test execution to the given test set
+    sys.stderr.write('LOG TRACE before issue link\n')
+    is_linked = await link_execution_to_test_set(test_execution_id, test_set)
+    if is_linked.startswith("Error"):
+        return is_linked
+    return f"{test_execution_id} Test execution created and linked to {test_set}"
+
+
+def basic_prompt(feature_file: str) -> str:
+    return f"""Your role is to update the scenarios of a set of tests. 
+The tests are located in a 'Jira Server' instance. This Jira Server has a *test management* plugin called Xray.
+Xray adds several types of Issue Types to regular Jira Server configuration. One of them is Test. 
+Xray allows native managing of Gherkin scenarios, both Scenario and Scenario Outline. Every Test issue has a custom field that hosts the Gherkin scenario. 
+That custom field is what you have to update following these instructions
+1. Locate the tests that have changed in {feature_file}
+2. Extract only the Gherkin steps, not the tags line, not the Scenario name, following these examples:
+
+2.1. Example 1: Changed Scenario test "TEST_SDPC-5" (notice that is the first tag of the tags line but without the '@' char) 
+2.1.1. Final Version:
+	@TEST_SDPC-5 @TESTSET_SDPC-99 @TESTSET_SDPC-105 @TESTSET_SDPC-106 @LeftMenu @Products @page
+	Scenario: Reset App State left menu option in Products page resets Shopping Cart and products status
+		Given I select "Add To Cart" option for "1" "unselected" random products when logged as "standard_user" user
+		And I select "Menu" option at "Products" page
+		When I select "Reset App State" option at the left menu
+		Then I don't see any badge in shopping cart at "Products" page
+		And I see product option is "Add To Cart" for "all" products at "Products" page
+2.1.2. Extracted Gherkin steps (notice there is no blank/tab on the left margin):
+Given I select "Add To Cart" option for "1" "unselected" random products when logged as "standard_user" user
+And I select "Menu" option at "Products" page
+When I select "Reset App State" option at the left menu
+Then I don't see any badge in shopping cart at "Products" page
+And I see product option is "Add To Cart" for "all" products at "Products" page
+
+2.2. Example 2: Changed Scenario Outline test "TEST_SDPC-4" (notice that is the first tag of the tags line but without the '@' char)
+2.2.1. Final Version:
+        @TEST_SDPC-4 @TESTSET_SDPC-98 @TESTSET_SDPC-106 @Login @page
+    	Scenario Outline: Invalid Login when using valid user and locked user and invalid password throws a login error
+    		Given I am "<user>" user
+    		When I login with user "invalid" password
+    		Then I see "Login" error at Login page
+
+    		Examples:
+    			| user            |
+    			| standard_user   |
+				| locked_out_user |
+
+2.2.2. Extracted Gherkin steps (notice there is no blank/tab on the left margin):
+Given I am "<user>" user
+When I login with user "invalid" password
+Then I see "Login" error at Login page
+
+Examples:
+    | user            |
+	| standard_user   |
+    | locked_out_user |
+
+3. Once you have all the changed tests and the final version of gherkin steps you can proceed to update Jira Server Instance
+3.1. Login into my Jira Server using the provided tool
+3.2. Create a loop: For every changed test, update it using the provided tool
+"""
+
+@mcp.prompt()
+def update_xray_scenarios(feature_file: str) -> str:
+    """Instructions for updating the modified tests in the given feature file (the name, not the content)
+    Args:
+        feature_file: the name of the feature file that contains the modified tests
+    """
+    return f"""{basic_prompt(feature_file)}
+3.3. Logout
+"""
+
+@mcp.prompt()
+def update_xray_scenarios_and_download_new_feature_file(feature_file: str, folder: str, jira_id: str) -> str:
+    """Instructions for updating the modified tests in the given feature file (the name, not the content) and
+    then download the feature file for the given test set and placed in the given folder
+    Args:
+        - feature_file: the name of the feature file that contains the modified tests.
+        - project_root_folder: the project root folder where the "features" folder is. The file will be saved in "features" folder.
+        - jira_id: the Jira issue id for the Test Set. Both options, with or without the initial '@' symbol, are supported.
+    """
+    if jira_id.startswith('@'):
+        jira_id = jira_id.split('@')[1]
+    return f"""{basic_prompt(feature_file)}
+3.3. Ask Xray to create and download the feature file into the {folder} folder for the {jira_id} test set
+3.4. Logout
+"""
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
+```
+
+# test
+
+```
+import json
+import os
+from dotenv import load_dotenv
+
+PATH = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(f"{PATH}/.env")
+
+with open(f"{PATH}/config.json") as f:
+    config = json.load(f)
+
+class JiraTest:
+    PAYLOAD = {
+        "fields": {
+            "labels": [],
+            "assignee":
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/user?username=antonio.gil.external%40axa.com",
+                "key": os.environ['JIRA_USER_KEY'],
+                "name": os.environ['JIRA_USER_NAME'],
+                #"emailAddress": "antonio.gil.external@axa.com",
+                #"avatarUrls":
+                #{
+                #    "48x48": "https://jira.axa.com/jira/secure/useravatar?ownerId=JIRAUSER82662&avatarId=40693",
+                #    "24x24": "https://jira.axa.com/jira/secure/useravatar?size=small&ownerId=JIRAUSER82662&avatarId=40693",
+                #    "16x16": "https://jira.axa.com/jira/secure/useravatar?size=xsmall&ownerId=JIRAUSER82662&avatarId=40693",
+                #    "32x32": "https://jira.axa.com/jira/secure/useravatar?size=medium&ownerId=JIRAUSER82662&avatarId=40693"
+                #},
+                #"displayName": "GIL Antonio",
+                "active": True,
+                #"timeZone": "Europe/Paris"
+            },
+            "reporter":
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/user?username=antonio.gil.external%40axa.com",
+                "key": os.environ['JIRA_USER_KEY'],
+                "name": os.environ['JIRA_USER_NAME'],
+                #"emailAddress": "antonio.gil.external@axa.com",
+                #"avatarUrls":
+                #{
+                #    "48x48": "https://jira.axa.com/jira/secure/useravatar?ownerId=JIRAUSER82662&avatarId=40693",
+                #    "24x24": "https://jira.axa.com/jira/secure/useravatar?size=small&ownerId=JIRAUSER82662&avatarId=40693",
+                #    "16x16": "https://jira.axa.com/jira/secure/useravatar?size=xsmall&ownerId=JIRAUSER82662&avatarId=40693",
+                #    "32x32": "https://jira.axa.com/jira/secure/useravatar?size=medium&ownerId=JIRAUSER82662&avatarId=40693"
+                #},
+                #"displayName": "GIL Antonio",
+                "active": True,
+                #"timeZone": "Europe/Paris"
+            },
+            "components":
+            [
+                {
+                    #"self": "https://jira.axa.com/jira/rest/api/2/component/51262",
+                    "id": config['JIRA_MAIN_COMPONENT_ID'],
+                    "name": config['JIRA_MAIN_COMPONENT_NAME']
+                }
+            ],
+            "issuetype":
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/issuetype/11300",
+                "id": config['JIRA_TEST_ISSUE_TYPE_ID'],
+                #"description": "Represents a Test",
+                #"iconUrl": "https://jira.axa.com/jira/download/resources/com.xpandit.plugins.xray/images/test.png",
+                "name": "Test",
+                #"subtask": false
+            },
+            "project":
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/project/25711",
+                "id": config['JIRA_PROJECT_ID'],
+                "key": config['JIRA_PROJECT_KEY'],
+                #"name": "Conversational AI Automation ",
+                #"projectTypeKey": "software",
+                #"avatarUrls":
+                #{
+                #    "48x48": "https://jira.axa.com/jira/secure/projectavatar?avatarId=15483",
+                #    "24x24": "https://jira.axa.com/jira/secure/projectavatar?size=small&avatarId=15483",
+                #    "16x16": "https://jira.axa.com/jira/secure/projectavatar?size=xsmall&avatarId=15483",
+                #    "32x32": "https://jira.axa.com/jira/secure/projectavatar?size=medium&avatarId=15483"
+                #},
+                #"projectCategory":
+                #{
+                #    "self": "https://jira.axa.com/jira/rest/api/2/projectCategory/11926",
+                #    "id": "11926",
+                #    "description": "Category for Organization AXA Group Operations created by SSP",
+                #    "name": "AXA Group Operations"
+                #}
+            },
+            "summary": "",
+            config['JIRA_GHERKIN_FIELD']: "",
+            config['JIRA_TEST_TYPE_FIELD']:
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/customFieldOption/11911",
+                "value": "Cucumber",
+                "id": config['JIRA_CUCUMBER_TEST_TYPE_ID'],
+                "disabled": False
+            },
+        }
+    }
+
+    def __init__(self, summary: str, scenario: str, labels: list[str]):
+        self.PAYLOAD['fields']['summary'] = summary
+        self.PAYLOAD['fields'][config['JIRA_GHERKIN_FIELD']] = scenario
+        self.PAYLOAD['fields']['labels'] = labels
+```
+
+# task
+```
+import json
+import os
+from dotenv import load_dotenv
+
+PATH = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(f"{PATH}/.env")
+
+with open(f"{PATH}/config.json") as f:
+    config = json.load(f)
+
+class JiraTask:
+    PAYLOAD = {
+        "fields": {
+            "labels": [],
+            "assignee":
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/user?username=antonio.gil.external%40axa.com",
+                "key": os.environ['JIRA_USER_KEY'],
+                "name": os.environ['JIRA_USER_NAME'],
+                #"emailAddress": "antonio.gil.external@axa.com",
+                #"avatarUrls":
+                #{
+                #    "48x48": "https://jira.axa.com/jira/secure/useravatar?ownerId=JIRAUSER82662&avatarId=40693",
+                #    "24x24": "https://jira.axa.com/jira/secure/useravatar?size=small&ownerId=JIRAUSER82662&avatarId=40693",
+                #    "16x16": "https://jira.axa.com/jira/secure/useravatar?size=xsmall&ownerId=JIRAUSER82662&avatarId=40693",
+                #    "32x32": "https://jira.axa.com/jira/secure/useravatar?size=medium&ownerId=JIRAUSER82662&avatarId=40693"
+                #},
+                #"displayName": "GIL Antonio",
+                "active": True,
+                #"timeZone": "Europe/Paris"
+            },
+            "reporter":
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/user?username=antonio.gil.external%40axa.com",
+                "key": os.environ['JIRA_USER_KEY'],
+                "name": os.environ['JIRA_USER_NAME'],
+                #"emailAddress": "antonio.gil.external@axa.com",
+                #"avatarUrls":
+                #{
+                #    "48x48": "https://jira.axa.com/jira/secure/useravatar?ownerId=JIRAUSER82662&avatarId=40693",
+                #    "24x24": "https://jira.axa.com/jira/secure/useravatar?size=small&ownerId=JIRAUSER82662&avatarId=40693",
+                #    "16x16": "https://jira.axa.com/jira/secure/useravatar?size=xsmall&ownerId=JIRAUSER82662&avatarId=40693",
+                #    "32x32": "https://jira.axa.com/jira/secure/useravatar?size=medium&ownerId=JIRAUSER82662&avatarId=40693"
+                #},
+                #"displayName": "GIL Antonio",
+                "active": True,
+                #"timeZone": "Europe/Paris"
+            },
+            "components":
+            [
+                {
+                    #"self": "https://jira.axa.com/jira/rest/api/2/component/51262",
+                    "id": config['JIRA_MAIN_COMPONENT_ID'],
+                    "name": config['JIRA_MAIN_COMPONENT_NAME']
+                }
+            ],
+            "issuetype":
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/issuetype/3",
+                "id": config['JIRA_TASK_ISSUE_TYPE_ID'],
+                #"description": "A task that needs to be done.",
+                #"iconUrl": "https://jira.axa.com/jira/secure/viewavatar?size=xsmall&avatarId=13098&avatarType=issuetype",
+                "name": "Task",
+                #"subtask": false,
+                #"avatarId": 13098
+            },
+            "project":
+            {
+                #"self": "https://jira.axa.com/jira/rest/api/2/project/25711",
+                "id": config['JIRA_PROJECT_ID'],
+                "key": config['JIRA_PROJECT_KEY'],
+                #"name": "Conversational AI Automation ",
+                #"projectTypeKey": "software",
+                #"avatarUrls":
+                #{
+                #    "48x48": "https://jira.axa.com/jira/secure/projectavatar?avatarId=15483",
+                #    "24x24": "https://jira.axa.com/jira/secure/projectavatar?size=small&avatarId=15483",
+                #    "16x16": "https://jira.axa.com/jira/secure/projectavatar?size=xsmall&avatarId=15483",
+                #    "32x32": "https://jira.axa.com/jira/secure/projectavatar?size=medium&avatarId=15483"
+                #},
+                #"projectCategory":
+                #{
+                #    "self": "https://jira.axa.com/jira/rest/api/2/projectCategory/11926",
+                #    "id": "11926",
+                #    "description": "Category for Organization AXA Group Operations created by SSP",
+                #    "name": "AXA Group Operations"
+                #}
+            },
+            "summary": "",
+            "description": "",
+        }
+    }
+
+    def __init__(self, summary: str, description: str):
+        self.PAYLOAD['fields']['summary'] = summary
+        self.PAYLOAD['fields']['description'] = description
+```
+
+# test execution
+```
+import json
+import os
+from dotenv import load_dotenv
+
+PATH = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(f"{PATH}/.env")
+
+with open(f"{PATH}/config.json") as f:
+    config = json.load(f)
+
+class JiraTestExecution:
+    PAYLOAD = {
+        "fields": {
+            "assignee": {
+                "key": os.getenv("JIRA_USER_KEY"),
+                "name": os.getenv("JIRA_USER_NAME"),
+                "active": True,
+            },
+            "reporter": {
+                "key": os.getenv("JIRA_USER_KEY"),
+                "name": os.getenv("JIRA_USER_NAME"),
+                "active": True,
+            },
+            "project": {
+                "id": config['JIRA_PROJECT_ID'],
+                "key": config['JIRA_PROJECT_KEY'],
+            },
+            "summary": "",
+            "issuetype": {
+                "id": config['JIRA_TEST_EXECUTION_ISSUE_TYPE_ID'],
+                "name": "Test Execution",
+            },
+            "components": [
+                {
+                    "id": config['JIRA_MAIN_COMPONENT_ID'],
+                    "name": config['JIRA_MAIN_COMPONENT_NAME'],
+                }
+            ],
+            # Puedes añadir campos personalizados aquí si lo necesitas
+        }
+    }
+
+    def __init__(self, summary: str):
+        self.PAYLOAD['fields']['summary'] = summary
+```
+
+# issue link
+```
+import json
+import os
+from dotenv import load_dotenv
+
+PATH = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(f"{PATH}/.env")
+
+with open(f"{PATH}/config.json") as f:
+    config = json.load(f)
+
+class JiraIssueLink:
+    PAYLOAD = {
+    "type": {
+        "name": "Tests",
+    },
+    "inwardIssue": {
+        "key": ""
+    },
+    "outwardIssue": {
+        "key": ""
+    },
+    "comment": {
+        "body": "",
+    }
+  }
+
+    def __init__(self, test_execution: str, test_set: str):
+        self.PAYLOAD['inwardIssue']['key'] = test_execution
+        self.PAYLOAD['outwardIssue']['key'] = test_set
+        self.PAYLOAD['comment']['body'] = f"Test Execution created by Jira-Xray MCP Server! Linked to {test_set}"
+```
+
+
+
+
+
+
+
+
+
+
+
+
