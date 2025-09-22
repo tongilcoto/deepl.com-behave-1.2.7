@@ -10,7 +10,10 @@ import { chromium, Browser, request } from 'playwright';
 import AdmZip from 'adm-zip';
 dotenv.config()
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// Try to use env variable REQUESTS_CA_BUNDLE=/opt/homebrew/etc/ca-certificates/cert.pem
+// You can place it in your .bash_profile or .zshrc
+// If not, uncomment this other line
+// process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const browserProxyOptions = {
   server: process.env.PROXY_SERVER || '',
